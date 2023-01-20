@@ -1,0 +1,229 @@
+import os
+import torch
+import random
+from PIL import Image
+import matplotlib.pyplot as plt
+from torch.utils.data import Dataset, DataLoader
+from torchvision import datasets, transforms
+import torchvision
+import torch.nn as nn
+import torch.nn.functional as F
+from torchsummary import summary
+import torch.optim as optim
+from torch.autograd import Variable
+%matplotlib inline
+
+device = 'cuda:0'
+
+
+
+class FruitDataset(Dataset):
+    def __init__(self, directory, transform):
+        self.directory = directory
+        self.image_and_label = self.image()
+        self.transform = transform
+
+    def image(self):
+        image_and_label = []
+        for folder in os.listdir(self.directory):
+            folder_path = os.path.join(self.directory, folder)
+
+            if os.path.isdir(folder_path):
+                for file in os.listdir(folder_path):
+                    file_path = os.path.join(folder_path, file)
+
+                    if os.path.isfile(file_path) and file.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff')):
+                        image_and_label.append((file_path, folder))
+        
+        return image_and_label
+
+    
+    def __len__(self):
+        return len(self.image_and_label)
+
+    def __getitem__(self, index):
+        images, labels = self.image_and_label[index]
+        image = Image.open(images)
+        dir_names = [d.name for d in os.scandir(self.directory)]
+        dir_names.sort()
+        dir_to_index = {dir_name: i for i, dir_name in enumerate(dir_names)}
+        label = dir_to_index[labels]
+        label_tensor = torch.tensor(label)
+        
+        if self.transform:
+            image = self.transform(image)
+
+        return image, label_tensor
+        
+        
+        
+#{'apple': 0, 'avocado': 1, 'banana': 2, 'cherry': 3, 'kiwifruit': 4, 'mango': 5, 'orange': 6, 'pineapple': 7, 'strawberry': 8, 'watermelon': 9}
+
+transform = transforms.Compose([transforms.CenterCrop(128), transforms.Grayscale(1), transforms.ToTensor()])
+
+train_directory = './drive/MyDrive/DeepLearning/fruit/train'
+test_directory = './drive/MyDrive/DeepLearning/fruit/test'
+
+train_dataset = FruitDataset(train_directory, transform)
+test_dataset = FruitDataset(test_directory, transform)
+
+print(train_dataset[0])
+print(len(train_dataset))
+
+print(test_dataset[0])
+print(len(test_dataset))
+
+
+
+criterion = nn.CrossEntropyLoss().to(device)
+
+train_dataloader = DataLoader(train_dataset, batch_size=500, shuffle=True)
+test_dataloader = DataLoader(test_dataset, batch_size=200, shuffle=True)
+
+print(len(train_dataloader))
+print(len(test_dataloader))
+
+
+
+class FruitNet(nn.Module):
+    def __init__(self):
+        super(FruitNet, self).__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv2d(1, 16, 4, 2, 1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+
+            nn.Conv2d(16, 32, 4, 2, 1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+
+            nn.Conv2d(32, 64, 4, 2, 1),
+            #nn.BatchNorm2d(64),
+            nn.ReLU(),
+
+            nn.Conv2d(64, 128, 3, 1, 1),
+            #nn.BatchNorm2d(128),
+            nn.ReLU(),
+
+            nn.Conv2d(128, 256, 3, 1, 1),
+            #nn.BatchNorm2d(256),
+            nn.ReLU()
+        )
+
+        self.lin = nn.Sequential(
+            nn.Linear(8*8*256, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 512),
+            nn.ReLU(),
+            nn.Linear(512, 10)           
+        )
+        
+    
+    def forward(self, x):
+        x = self.cnn(x)
+        x = x.view(-1, 8*8*256)
+        x = self.lin(x)
+        
+        return x
+
+
+
+net = FruitNet().to(device)
+print(net)
+print(summary(net, (1, 128, 128)))
+
+
+
+loss_list = []
+test_loss_list = []
+acc_list = []
+base_epoch = 0
+
+optimizer = optim.Adam(params=net.parameters(), lr=0.001)
+
+
+
+for epoch in range(35):
+    net.train()
+    total_loss = 0
+    for data in train_dataloader:
+        inputs, labels = data
+        optimizer.zero_grad()
+        outputs = net(inputs.to(device))
+        loss = criterion(outputs, labels.to(device))
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    loss_list.append(total_loss/len(train_dataset))
+
+    correct = 0
+    total = 0
+    total_test_loss = 0
+    net.eval()
+    for data in test_dataloader:
+        inputs, labels = data
+        outputs = net(inputs.to(device))
+        test_loss = criterion(outputs, labels.to(device))
+        total_test_loss += test_loss.item()
+        _, predicted = torch.max(outputs.data, 1)
+        total += labels.size(0)
+        correct += (predicted == labels.to(device)).sum()
+    
+    test_loss_list.append(total_test_loss/total)
+    acc_list.append(float(correct)/total)
+
+
+    print('{}epoch : train_loss:{}, test_loss:{}, test_acc:{}'.format(
+        base_epoch + epoch + 1,
+        total_loss/len(train_dataset),
+        total_test_loss/len(test_dataset),
+        float(correct)/total
+    ))
+
+print('end of study')
+base_epoch += epoch + 1
+
+
+
+
+plt.figure()
+plt.plot(range(1, len(loss_list)+1), loss_list, label='train_loss')
+plt.plot(range(1, len(test_loss_list)+1), test_loss_list, label='test_loss')
+plt.xlabel('epoch')
+plt.legend()
+plt.show()
+
+
+
+
+test_iter = iter(test_dataloader)
+true_list = []
+false_list = []
+inputs, labels = next(test_iter)
+outputs = net(Variable(inputs.cuda()))
+_, predicted = torch.max(outputs.data, 1)
+
+for idx in range(len(labels)):
+    list = [inputs[idx], labels[idx], predicted[idx]]
+    if int(labels[idx]) == int(predicted[idx]):
+        true_list.append(list)
+    else:
+        false_list.append(list)
+
+print('正解データ')
+for idx, tlst in enumerate(true_list[:5]):
+    plt.figure(idx+1)   
+    plt.imshow(tlst[0].numpy().reshape(128, 128))
+    plt.title('correct: {}, predict: {}'.format(tlst[1], tlst[2]))
+    
+
+print('不正解データ')
+for idx, flst in enumerate(false_list[:5]):
+    plt.figure(idx+1)   
+    plt.imshow(flst[0].numpy().reshape(128, 128))
+    plt.title('correct: {}, predict: {}'.format(flst[1], flst[2]))
